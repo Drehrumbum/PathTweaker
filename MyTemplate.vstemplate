@@ -1,0 +1,31 @@
+<VSTemplate Version="3.0.0" xmlns="http://schemas.microsoft.com/developer/vstemplate/2005" Type="Project">
+  <TemplateData>
+    <Name>20240602_PathTweaker_project</Name>
+    <Description>
+    </Description>
+    <ProjectType>VC</ProjectType>
+    <ProjectSubType>
+    </ProjectSubType>
+    <SortOrder>1000</SortOrder>
+    <CreateNewFolder>true</CreateNewFolder>
+    <DefaultName>20240602_PathTweaker_project</DefaultName>
+    <ProvideDefaultName>true</ProvideDefaultName>
+    <LocationField>Enabled</LocationField>
+    <EnableLocationBrowseButton>true</EnableLocationBrowseButton>
+    <Icon>__TemplateIcon.ico</Icon>
+  </TemplateData>
+  <TemplateContent>
+    <Project TargetFileName="PathTweaker.vcxproj" File="PathTweaker.vcxproj" ReplaceParameters="true">
+      <ProjectItem ReplaceParameters="false" TargetFileName="$projectname$.vcxproj.filters">PathTweaker.vcxproj.filters</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="configparser.cpp">configparser.cpp</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="dialog.cpp">dialog.cpp</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="disk_space_thread.cpp">disk_space_thread.cpp</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="file_handling.cpp">file_handling.cpp</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="folder_select_thread.cpp">folder_select_thread.cpp</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="PathTweaker.cpp">PathTweaker.cpp</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="PathTweaker.h">PathTweaker.h</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="resource1.h">resource1.h</ProjectItem>
+      <ProjectItem ReplaceParameters="false" TargetFileName="PathTweaker1.rc">PathTweaker1.rc</ProjectItem>
+    </Project>
+  </TemplateContent>
+</VSTemplate>
