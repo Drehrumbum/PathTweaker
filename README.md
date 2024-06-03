@@ -9,5 +9,8 @@ This means, for example, if you have connected your external “My RAW-Recording
 
 To make the long story short: With PathTweaker it’s no longer necessary to write on the system-drive at first and to copy these large files to another drive later, or to change QIRX’s configuration-file manually for targeting another drive.
 
+For more information see the PDF in the download-section.
+
+
 
 
