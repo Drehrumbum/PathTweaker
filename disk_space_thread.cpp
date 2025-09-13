@@ -20,59 +20,63 @@
 * GNU General Public License (GPL).
 *
 *
-* (c) 2024 Heiko Vogel <hevog@gmx.de>
+* (c) 2024-25 Heiko Vogel <hevog@gmx.de>
 *
 */
 
 #include "PathTweaker.h"
 
-#define ONE_MEGABYTE (1'000'000.0)
-#define MIN_RAW_WRITE_SPEED (4'000'000) // ADS-B (2 MSpl/s and at least two bytes per sample)
-#define AVG_UPDATE_INTERVAL 5 // one speed meassurement every 5 seconds
+#define AVG_UPDATE_INTERVAL 20 // one speed meassurement every AVG_UPDATE_INTERVAL seconds
+const double cdOneMillionByte = 1'000'000.0; // We want to see the speed in million bytes per sec. ("4.096") 
+const double cdMinRawWriteSpeed = 4'000'000.0; // ADS-B (2 MSpl/s and at least two bytes per sample)
+const double cdMinEtiWriteSpeed = 250'000.0;   // A little bit below 2 Mbit/s
 
-// moving average array for a 'smoother' remaining recording time.
-#define AVG_ARRAY_POWER 4
-#define AVG_ARRAY_ELEMENTS (1 << AVG_ARRAY_POWER) // 16 elements
+
 
 struct MOVINGAVERAGEARRAY {
-    long long arrayValues[AVG_ARRAY_ELEMENTS];
-    long long arrayInsertIndex;
+    double* pArrayValues;
+    unsigned int arrayInsertIndex;
+    unsigned int numElements;
 };
 
-long long GetMovingAverage(MOVINGAVERAGEARRAY* pAvgArray);
-void InsertMovingAverageValue(MOVINGAVERAGEARRAY* pAvgArray, long long newVal);
-void SetAllMovingAverageValues(MOVINGAVERAGEARRAY* pAvgArray, long long value);
-void ClearMovingAverageArray(MOVINGAVERAGEARRAY* pAvgArray);
 
+
+int InitMovingAverageArray(MOVINGAVERAGEARRAY* pAvgArray, unsigned int numElements);
+void InsertMovingAverageValue(MOVINGAVERAGEARRAY* pAvgArray, double newVal);
+void SetAllMovingAverageValues(MOVINGAVERAGEARRAY* pAvgArray, double value);
+double GetMovingAverage(MOVINGAVERAGEARRAY* pAvgArray);
+void FreeMovingAverageArray(MOVINGAVERAGEARRAY* pAvgArray);
 
 
 DWORD WINAPI DiskSpaceThread(LPVOID DTM) {
     char buff[32];
-    int timeDivider = 2, displayCounter = 0;
-    long long speed;
-    double dispSpeed, deltaTime, qpfPeriod;
+    int a, b, displayCounter = 0;
+    double displaySpeed, deltaTime, qpfPeriod;
     LARGE_INTEGER qpf, liOldTime, liCurTime;
     ULARGE_INTEGER ullFreeToCaller, ullDisk, ullFree, ullOldSpace;
     unsigned long long remTime, hours, minutes;
-    MOVINGAVERAGEARRAY speedAvgArr;
+    MOVINGAVERAGEARRAY speedAvgArr, displaySpeedAvgArr;
 
     GetDiskFreeSpaceEx(pPTM->szCurrentRawPath, &ullFreeToCaller, &ullDisk, &ullFree);
     ullOldSpace = ullFreeToCaller;
-    ClearMovingAverageArray(&speedAvgArr);
-    SetAllMovingAverageValues(&speedAvgArr, MIN_RAW_WRITE_SPEED);
-    QueryPerformanceFrequency(&qpf);
-    qpfPeriod = 1.0 / qpf.QuadPart;    
-    QueryPerformanceCounter(&liOldTime);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
-
-    while (!pPTM->finishThread) {
-        if ((2 == timeDivider)) {
-            timeDivider = 0;
-
-// Wait here until possible path-switching stuff is over.
-// pPTM->flagNewPath is set when we can go again.
-            WaitForSingleObject(pPTM->hWaitPathSwitch, INFINITE);
  
+    a = InitMovingAverageArray(&speedAvgArr, 20);
+    b = InitMovingAverageArray(&displaySpeedAvgArr, 3);
+
+    if (a && b) {
+        SetAllMovingAverageValues(&speedAvgArr, cdMinRawWriteSpeed);
+
+
+        QueryPerformanceFrequency(&qpf);
+        qpfPeriod = 1.0 / qpf.QuadPart;
+        QueryPerformanceCounter(&liOldTime);
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
+
+        while (!pPTM->finishThread) {
+            // Wait here until possible path-switching stuff is over.
+            // pPTM->flagNewPath is set when we can go again.
+            WaitForSingleObject(pPTM->hWaitPathSwitch, INFINITE);
+
             switch (pPTM->currentNodeSelection) {
             case NODE_RAW:
                 GetDiskFreeSpaceEx(pPTM->szCurrentRawPath, &ullFreeToCaller, &ullDisk, &ullFree);
@@ -80,15 +84,23 @@ DWORD WINAPI DiskSpaceThread(LPVOID DTM) {
             case NODE_AUD:
                 GetDiskFreeSpaceEx(pPTM->szCurrentAudPath, &ullFreeToCaller, &ullDisk, &ullFree);
                 break;
+            case NODE_ETI:
+                GetDiskFreeSpaceEx(pPTM->szCurrentEtiPath, &ullFreeToCaller, &ullDisk, &ullFree);
+                break;
             default:
                 GetDiskFreeSpaceEx(pPTM->szCurrentTiiPath, &ullFreeToCaller, &ullDisk, &ullFree);
                 break;
             }
-            
+
             if (pPTM->flagNewPath) {
                 ullOldSpace = ullFreeToCaller;
-                SetAllMovingAverageValues(&speedAvgArr, MIN_RAW_WRITE_SPEED);
-                displayCounter = 0;
+
+                if (pPTM->currentNodeSelection == NODE_ETI)
+                    SetAllMovingAverageValues(&speedAvgArr, cdMinEtiWriteSpeed);
+                else
+                    SetAllMovingAverageValues(&speedAvgArr, cdMinRawWriteSpeed);
+
+                displayCounter = AVG_UPDATE_INTERVAL;
                 pPTM->flagNewPath = 0;
             }
 
@@ -97,63 +109,89 @@ DWORD WINAPI DiskSpaceThread(LPVOID DTM) {
 
                     QueryPerformanceCounter(&liCurTime);
                     deltaTime = (liCurTime.QuadPart - liOldTime.QuadPart) * qpfPeriod;
-                    dispSpeed = (double)(ullOldSpace.QuadPart - ullFreeToCaller.QuadPart) / deltaTime;
-                    speed = (long long)dispSpeed;
-                    sprintf(buff, "%4.2f", dispSpeed / ONE_MEGABYTE);
+                    displaySpeed = (ullOldSpace.QuadPart - ullFreeToCaller.QuadPart) / deltaTime;
+
+                    InsertMovingAverageValue(&displaySpeedAvgArr, displaySpeed);
+                    sprintf(buff, "%.3f", GetMovingAverage(&displaySpeedAvgArr) / cdOneMillionByte);
                     SetWindowText(pPTM->hWndLbWriteSpeed, buff);
 
-                    if (speed < MIN_RAW_WRITE_SPEED)
-                        speed = MIN_RAW_WRITE_SPEED;
+                    if (pPTM->currentNodeSelection == NODE_ETI) {
+                        if (displaySpeed < cdMinEtiWriteSpeed)
+                            displaySpeed = cdMinEtiWriteSpeed;
+                    }
+                    else {
+                        if (displaySpeed < cdMinRawWriteSpeed)
+                            displaySpeed = cdMinRawWriteSpeed;
+                    }
                 }
                 else {
-                    SetAllMovingAverageValues(&speedAvgArr, MIN_RAW_WRITE_SPEED);
-                    speed = MIN_RAW_WRITE_SPEED;
+                    if (pPTM->currentNodeSelection == NODE_ETI) {
+                        SetAllMovingAverageValues(&speedAvgArr, cdMinEtiWriteSpeed);
+                        displaySpeed = cdMinEtiWriteSpeed;
+                    }
+                    else {
+                        SetAllMovingAverageValues(&speedAvgArr, cdMinRawWriteSpeed);
+                        displaySpeed = cdMinRawWriteSpeed;
+                    }
                 }
-
-                InsertMovingAverageValue(&speedAvgArr, speed);
+                InsertMovingAverageValue(&speedAvgArr, displaySpeed);
                 ullOldSpace = ullFreeToCaller;
                 liOldTime = liCurTime;
-                displayCounter = 0;               
+                displayCounter = 0;
             }
 
-            remTime  = ullFreeToCaller.QuadPart / GetMovingAverage(&speedAvgArr);
-            hours    = remTime / 3600;
+            remTime =  (unsigned long long)(ullFreeToCaller.QuadPart / GetMovingAverage(&speedAvgArr));
+            hours = remTime / 3600;
             remTime -= hours * 3600;
-            minutes  = remTime / 60;
+            minutes = remTime / 60;
             remTime -= minutes * 60;
 
-            sprintf(buff, "%02i:%02i:%02i", (int)hours, (int)minutes, (int)remTime);
+            sprintf(buff, "%02llu:%02llu:%02llu", hours, minutes, remTime);
             SetWindowText(pPTM->hWndLbRemRecTime, buff);
-            displayCounter++;            
+            displayCounter++;
+            Sleep(1000);
         }
-        timeDivider++;
-        Sleep(500);
     }
+
+    FreeMovingAverageArray(&speedAvgArr);
+    FreeMovingAverageArray(&displaySpeedAvgArr);
     return 0;
 }
 
-
-inline void InsertMovingAverageValue(MOVINGAVERAGEARRAY* pAvgArray, long long newVal) {
-    pAvgArray->arrayValues[pAvgArray->arrayInsertIndex] = newVal;
-    ++pAvgArray->arrayInsertIndex &= (AVG_ARRAY_ELEMENTS - 1);
-}
-
-inline long long GetMovingAverage(MOVINGAVERAGEARRAY* pAvgArray) {
-    long long tmp1, tmp2;
-    tmp1 = 0;
-    tmp2 = 0;
-    for (long long i = 0; i < AVG_ARRAY_ELEMENTS; i += 2) {
-        tmp1 += pAvgArray->arrayValues[i];
-        tmp2 += pAvgArray->arrayValues[i + 1];
+inline int InitMovingAverageArray(MOVINGAVERAGEARRAY* pAvgArray, unsigned int numElements) {
+    int ret = 0;
+    memset(pAvgArray, 0, sizeof(MOVINGAVERAGEARRAY));    
+    
+    if ((pAvgArray->pArrayValues = (double*)_aligned_malloc(numElements * sizeof(double), 16))) {
+        memset(pAvgArray->pArrayValues, 0, numElements * sizeof(double));
+        pAvgArray->numElements = numElements;
+        ret++;
     }
-    return (tmp1 + tmp2) / AVG_ARRAY_ELEMENTS;
+    return ret;
 }
 
-inline void SetAllMovingAverageValues(MOVINGAVERAGEARRAY* pAvgArray, long long value) {
-    for (int i = 0; i < AVG_ARRAY_ELEMENTS; i++)
-        pAvgArray->arrayValues[i] = value;
+
+inline void InsertMovingAverageValue(MOVINGAVERAGEARRAY* pAvgArray, double newVal) {
+    pAvgArray->pArrayValues[pAvgArray->arrayInsertIndex] = newVal;
+    if (++pAvgArray->arrayInsertIndex == pAvgArray->numElements)
+        pAvgArray->arrayInsertIndex = 0;
 }
 
-inline void ClearMovingAverageArray(MOVINGAVERAGEARRAY* pAvgArray) {
-    memset(pAvgArray, 0, sizeof(MOVINGAVERAGEARRAY));
+inline double GetMovingAverage(MOVINGAVERAGEARRAY* pAvgArray) {
+    double tmp = 0.;
+
+    for (int i = 0; i < pAvgArray->numElements; i++) {
+        tmp += pAvgArray->pArrayValues[i];
+    }
+    return tmp / pAvgArray->numElements;
+}
+
+inline void SetAllMovingAverageValues(MOVINGAVERAGEARRAY* pAvgArray, double value) {
+    for (int i = 0; i < pAvgArray->numElements; i++)
+        pAvgArray->pArrayValues[i] = value;
+}
+
+void FreeMovingAverageArray(MOVINGAVERAGEARRAY* pAvgArray) {
+    if(pAvgArray->pArrayValues)
+        _aligned_free(pAvgArray->pArrayValues);
 }
