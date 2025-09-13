@@ -20,7 +20,7 @@
 * GNU General Public License (GPL).
 *
 *
-* (c) 2024 Heiko Vogel <hevog@gmx.de>
+* (c) 2024-25 Heiko Vogel <hevog@gmx.de>
 *
 */
 
@@ -32,6 +32,8 @@
 #include <Windows.h>
 #include <commctrl.h>
 #include <stdio.h>
+#include <malloc.h>
+
 
 #define VCALLOC(size) VirtualAlloc(0, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #define VFREE(x) VirtualFree(x, 0, MEM_RELEASE);
@@ -43,6 +45,7 @@
 #define NODE_RAW 0
 #define NODE_AUD 1
 #define NODE_TII 2
+#define NODE_ETI 3 // New setting for QIRX version 5
 
 // Some private messages
 #define PTMSG_FOLDER_SELECTION_READY   WM_APP
@@ -57,6 +60,7 @@ szQirxConfigExt[] = ".config",
 needleRawOut[] = "<rawOut value",
 needleAudOut[] = "<DAB value",
 needleTiiLog[] = "<TIILogger val",
+needleEtiOut[] = "<ETI value",
 needleQm = '"',
 szPathNotSet[] = "SELECT A PATH AT FIRST",
 szPathNotAvailable[] = "PATH NOT AVAILABLE",
@@ -64,6 +68,7 @@ chDriveBase = 'A',
 szRaw[] = "RAW",
 szAudio[] = "AUDIO",
 szTii[] = "TII",
+szEti[] = "ETI",
 szGroupBoxLabel[] = "rec. path && drive info ",
 
 szMsgSelectFolder[] =
@@ -79,7 +84,7 @@ szMsgSerialCheck[] =
 "Use it anyway?",
 
 szMsgNotFound[] = 
-"QIRX not found. Copy the program into the program-directory of QIRX version 2, 3 or 4!",
+"QIRX not found. Copy the program into the program-directory of QIRX version 2, 3, 4 or 5!",
 
 szMsgQuit[] = 
 "Do you really want to quit?\n\n"
@@ -95,22 +100,26 @@ struct MAINDLGSETTINGS {
     BYTE transparency;
     BYTE autoPathSwap;
     BYTE collapsed;
-    int  z_iReserved[2];
+    int  z_iReserved;
+    DWORD  etiPathDriveSerial;
     DWORD  rawPathDriveSerial;
     DWORD  audPathDriveSerial;
     DWORD  tiiPathDriveSerial;
     char szExtRawPath[MAX_PATH_BUFFER_SIZE];
     char szExtAudPath[MAX_PATH_BUFFER_SIZE];
     char szExtTiiPath[MAX_PATH_BUFFER_SIZE];
+    char szExtEtiPath[MAX_PATH_BUFFER_SIZE];
 };
 
 struct PATHTWEAKERMEM {
     char szOriginalRawPath[MAX_PATH_BUFFER_SIZE];
     char szOriginalAudPath[MAX_PATH_BUFFER_SIZE];
     char szOriginalTiiPath[MAX_PATH_BUFFER_SIZE];
+    char szOriginalEtiPath[MAX_PATH_BUFFER_SIZE];
     char szCurrentRawPath[MAX_PATH_BUFFER_SIZE];
     char szCurrentAudPath[MAX_PATH_BUFFER_SIZE];
     char szCurrentTiiPath[MAX_PATH_BUFFER_SIZE];
+    char szCurrentEtiPath[MAX_PATH_BUFFER_SIZE];
     char szLocalAppDataBasePath[MAX_PATH_BUFFER_SIZE];
     char szDlgFullConfigFileName[MAX_PATH_BUFFER_SIZE];
     char szQirxFullConfigFileName[MAX_PATH_BUFFER_SIZE];
@@ -134,9 +143,12 @@ struct PATHTWEAKERMEM {
     int flagRawDriveOnline;
     int flagAudDriveOnline;
     int flagTiiDriveOnline;
+    int flagEtiDriveOnline;
     int flagRawDriveSet;
     int flagAudDriveSet;
     int flagTiiDriveSet;
+    int flagEtiDriveSet;
     int flagNewPath;
+    int flagIsQ5;
 };
 inline PATHTWEAKERMEM* pPTM;
