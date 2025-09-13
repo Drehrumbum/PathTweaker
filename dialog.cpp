@@ -20,7 +20,7 @@
 * GNU General Public License (GPL).
 *
 *
-* (c) 2024 Heiko Vogel <hevog@gmx.de>
+* (c) 2024-25 Heiko Vogel <hevog@gmx.de>
 *
 */
 
@@ -28,6 +28,7 @@
 #include "resource1.h"
 #include <Dbt.h>
 #include <Shlwapi.h>
+#include <intrin.h>
 
 #pragma comment(lib, "Shlwapi.lib")
 
@@ -48,8 +49,8 @@ extern void WriteDlgConfigFile();
 
 
 void UpdateDlgControls();
-int SerialCheck(char* szStoredExternalPath, int storedSerial);
-DWORD  GetVolumeSerial(char* pathOnDrive);
+int SerialCheck(char* szStoredExternalPath, DWORD storedSerial);
+DWORD GetVolumeSerial(char* pathOnDrive);
 int ValidatePath(_DEV_BROADCAST_VOLUME* dbv, int mode, char* szStoredExternalPath, int storedSerial);
 void MakePathCurrent();
 void ResetPath();
@@ -58,10 +59,11 @@ void ResetPath();
 
 // a little margin around the path looks better than the path 
 // ellipsis stuff in the proporties
+
 void CompactPathAndSetLabelText(int controlID, char* szText) {
     char tmp[MAX_PATH_BUFFER_SIZE];
     lstrcpyn(tmp, szText, MAX_PATH_BUFFER_SIZE);
-    PathCompactPath(0, tmp, pPTM->labelWidth);
+    PathCompactPath(NULL, tmp, pPTM->labelWidth);
     SetDlgItemText(pPTM->hWndDialog, controlID, tmp);
 }
 
@@ -98,6 +100,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
     case WM_CTLCOLORSTATIC: { // red background for ext. path label
         if ((pPTM->currentNodeSelection == NODE_RAW && !pPTM->flagRawDriveOnline) ||
             (pPTM->currentNodeSelection == NODE_AUD && !pPTM->flagAudDriveOnline) ||
+            (pPTM->currentNodeSelection == NODE_ETI && !pPTM->flagEtiDriveOnline) ||
             (pPTM->currentNodeSelection == NODE_TII && !pPTM->flagTiiDriveOnline)) {
             if (GetDlgItem(hDlg, IDC_LBL_EXTERNAL_PATH) == (HWND)lParam) {
                 hdc = (HDC)wParam;
@@ -154,6 +157,20 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
             }
             break;
 
+        case NODE_ETI:
+            if (timerSwitcher || (pPTM->flagEtiDriveOnline)) {
+                CompactPathAndSetLabelText(IDC_LBL_EXTERNAL_PATH, pPTM->mDlgSet.szExtEtiPath);
+                timerSwitcher = 0;
+            }
+            else {
+                if (pPTM->mDlgSet.audPathDriveSerial)
+                    SetDlgItemText(hDlg, IDC_LBL_EXTERNAL_PATH, szPathNotAvailable);
+                else
+                    SetDlgItemText(hDlg, IDC_LBL_EXTERNAL_PATH, szPathNotSet);
+                timerSwitcher = 1;
+            }
+            break;
+
         default:
             if (timerSwitcher || (pPTM->flagTiiDriveOnline)) {
                 CompactPathAndSetLabelText(IDC_LBL_EXTERNAL_PATH, pPTM->mDlgSet.szExtTiiPath);
@@ -192,6 +209,9 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
                         break;
                     case NODE_AUD:
                         ht = CreateThread(NULL, 0, SelectFolderThread, pPTM->mDlgSet.szExtAudPath, 0, NULL);
+                        break;
+                    case NODE_ETI:
+                        ht = CreateThread(NULL, 0, SelectFolderThread, pPTM->mDlgSet.szExtEtiPath, 0, NULL);
                         break;
                     default:
                         ht = CreateThread(NULL, 0, SelectFolderThread, pPTM->mDlgSet.szExtTiiPath, 0, NULL);
@@ -232,6 +252,12 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
                         if (pPTM->flagTiiDriveOnline)
                             MakePathCurrent();
 
+                        if (pPTM->flagIsQ5) {
+                            pPTM->currentNodeSelection = NODE_ETI;
+                            if (pPTM->flagEtiDriveOnline)
+                                MakePathCurrent();
+                        }
+
                         pPTM->currentNodeSelection = answer;
                         UpdateDlgControls();
                         SetEvent(pPTM->hWaitPathSwitch); // unblock disk_space_thread
@@ -255,6 +281,9 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
                 case NODE_AUD:
                     sprintf(buf, " %s %s ", szAudio, szGroupBoxLabel);
                     break;
+                case NODE_ETI:
+                    sprintf(buf, " %s %s ", szEti, szGroupBoxLabel);
+                    break;
                 default:
                     sprintf(buf, " %s %s ", szTii, szGroupBoxLabel);
                     break;
@@ -272,6 +301,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
         switch (wParam) {
             case DBT_DEVICEARRIVAL: {
                 StopSpaceThread();
+
                 if (ValidatePath((_DEV_BROADCAST_VOLUME*)lParam, PT_DRIVE_ARRIVED,
                     pPTM->mDlgSet.szExtRawPath, pPTM->mDlgSet.rawPathDriveSerial)) {
                     pPTM->flagRawDriveOnline = 1;
@@ -288,37 +318,54 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
                 if (ValidatePath((_DEV_BROADCAST_VOLUME*)lParam, PT_DRIVE_ARRIVED,
                     pPTM->mDlgSet.szExtAudPath, pPTM->mDlgSet.audPathDriveSerial)) {
                     pPTM->flagAudDriveOnline = 1;
+                    pPTM->flagAudDriveSet = 0;
 
                     if (pPTM->mDlgSet.autoPathSwap) {
                         if (ProcessQirxXMLFile(pPTM->mDlgSet.szExtAudPath, needleAudOut, CONFIG_WRITE)) {
                             memcpy(pPTM->szCurrentAudPath, pPTM->mDlgSet.szExtAudPath, MAX_PATH_BUFFER_SIZE);
                             pPTM->flagAudDriveSet = 1;
                         }
-                        else
-                            pPTM->flagAudDriveSet = 0;
                     }
-                    else
-                        pPTM->flagAudDriveSet = 0;
                 }
 
                 if (ValidatePath((_DEV_BROADCAST_VOLUME*)lParam, PT_DRIVE_ARRIVED,
                     pPTM->mDlgSet.szExtTiiPath, pPTM->mDlgSet.tiiPathDriveSerial)) {
                     pPTM->flagTiiDriveOnline = 1;
+                    pPTM->flagTiiDriveSet = 0;
 
                     if (pPTM->mDlgSet.autoPathSwap) {
                         if (ProcessQirxXMLFile(pPTM->mDlgSet.szExtTiiPath, needleTiiLog, CONFIG_WRITE)) {
                             memcpy(pPTM->szCurrentTiiPath, pPTM->mDlgSet.szExtTiiPath, MAX_PATH_BUFFER_SIZE);
                             pPTM->flagTiiDriveSet = 1;
                         }
-                        else
-                            pPTM->flagTiiDriveSet = 0;
                     }
-                    else
-                        pPTM->flagTiiDriveSet = 0;
                 }
+  
+                if (pPTM->flagIsQ5) {
 
-                if (pPTM->flagAudDriveOnline && pPTM->flagRawDriveOnline && pPTM->flagTiiDriveOnline)
-                    TIMER_OFF;
+                    if (ValidatePath((_DEV_BROADCAST_VOLUME*)lParam, PT_DRIVE_ARRIVED,
+                        pPTM->mDlgSet.szExtEtiPath, pPTM->mDlgSet.etiPathDriveSerial)) {
+                        pPTM->flagEtiDriveOnline = 1;
+                        pPTM->flagEtiDriveSet = 0;
+                        
+                        if (pPTM->mDlgSet.autoPathSwap) {
+                            if (ProcessQirxXMLFile(pPTM->mDlgSet.szExtEtiPath, needleEtiOut, CONFIG_WRITE)) {
+                                memcpy(pPTM->szCurrentEtiPath, pPTM->mDlgSet.szExtEtiPath, MAX_PATH_BUFFER_SIZE);
+                                pPTM->flagEtiDriveSet = 1;
+                            }
+                        }
+                    }
+
+                    if (pPTM->flagAudDriveOnline && pPTM->flagRawDriveOnline
+                        && pPTM->flagTiiDriveOnline && pPTM->flagEtiDriveOnline)
+                        TIMER_OFF;
+                }
+                else {
+
+                    if (pPTM->flagAudDriveOnline && pPTM->flagRawDriveOnline
+                        && pPTM->flagTiiDriveOnline)
+                        TIMER_OFF;
+                }
 
                 UpdateDlgControls();
                 SetEvent(pPTM->hWaitPathSwitch); // go, disk_space_thread
@@ -328,6 +375,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 
             case DBT_DEVICEREMOVECOMPLETE: {
                 StopSpaceThread();
+
                 if (ValidatePath((_DEV_BROADCAST_VOLUME*)lParam, PT_DRIVE_REMOVED,
                     pPTM->mDlgSet.szExtRawPath, pPTM->mDlgSet.rawPathDriveSerial)) {
                     pPTM->flagRawDriveOnline = 0;
@@ -358,8 +406,28 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
                     }
                 }
 
-                if (!pPTM->flagAudDriveOnline || !pPTM->flagRawDriveOnline || !pPTM->flagTiiDriveOnline)
-                    TIMER_ON;
+                if (pPTM->flagIsQ5) {
+                    
+                    if (ValidatePath((_DEV_BROADCAST_VOLUME*)lParam, PT_DRIVE_REMOVED,
+                        pPTM->mDlgSet.szExtEtiPath, pPTM->mDlgSet.etiPathDriveSerial)) {
+                        pPTM->flagEtiDriveOnline = 0;
+                        
+                        if (ProcessQirxXMLFile(pPTM->szOriginalEtiPath, needleEtiOut, CONFIG_WRITE)) {
+                            memcpy(pPTM->szCurrentEtiPath, pPTM->szOriginalEtiPath, MAX_PATH_BUFFER_SIZE);
+                            pPTM->flagEtiDriveSet = 0;
+                        }
+                    }
+
+                    if (!pPTM->flagAudDriveOnline || !pPTM->flagRawDriveOnline ||
+                        !pPTM->flagTiiDriveOnline || !pPTM->flagEtiDriveOnline)
+                        TIMER_ON;
+                }
+                else {
+                    if (!pPTM->flagAudDriveOnline || !pPTM->flagRawDriveOnline ||
+                        !pPTM->flagTiiDriveOnline)
+                        TIMER_ON;
+                }
+
                 UpdateDlgControls();
                 SetEvent(pPTM->hWaitPathSwitch); // go, disk_space_thread
                 ret = true;
@@ -424,6 +492,11 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
             pPTM->mDlgSet.audPathDriveSerial = GetVolumeSerial(pPTM->mDlgSet.szExtAudPath);
             break;
 
+        case NODE_ETI:
+            pPTM->flagEtiDriveOnline = 1;
+            pPTM->mDlgSet.etiPathDriveSerial = GetVolumeSerial(pPTM->mDlgSet.szExtEtiPath);
+            break;
+
         default:
             pPTM->flagTiiDriveOnline = 1;
             pPTM->mDlgSet.tiiPathDriveSerial = GetVolumeSerial(pPTM->mDlgSet.szExtTiiPath);
@@ -442,8 +515,17 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
         UpdateDlgControls();
         WriteDlgConfigFile();
 
-        if (pPTM->flagAudDriveOnline && pPTM->flagRawDriveOnline && pPTM->flagTiiDriveOnline)
-            TIMER_OFF;
+        if (pPTM->flagIsQ5) {
+            if (pPTM->flagAudDriveOnline && pPTM->flagRawDriveOnline &&
+                pPTM->flagTiiDriveOnline && pPTM->flagEtiDriveOnline)
+                TIMER_OFF;
+        }
+        else {
+            if (pPTM->flagAudDriveOnline && pPTM->flagRawDriveOnline &&
+                pPTM->flagTiiDriveOnline && pPTM->flagEtiDriveOnline)
+                TIMER_OFF;
+        }
+
         break;
     }
     case PTMSG_FOLDER_SELECTION_ERROR: {
@@ -472,12 +554,9 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
             DEFAULT_PITCH | FF_MODERN, NULL);
         SendMessage(pPTM->hWndLbRemRecTime, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessage(pPTM->hWndLbWriteSpeed, WM_SETFONT, (WPARAM)hFont, TRUE);
-
         SendMessage(pPTM->hWndCbNodeSel, CB_ADDSTRING, 0, (LPARAM)szRaw);
         SendMessage(pPTM->hWndCbNodeSel, CB_ADDSTRING, 0, (LPARAM)szAudio);
         SendMessage(pPTM->hWndCbNodeSel, CB_ADDSTRING, 0, (LPARAM)szTii);
-        SendMessage(pPTM->hWndCbNodeSel, CB_SETCURSEL, 0, 0);
-
         // Read the original paths from the config-file.
         if (ProcessQirxXMLFile(pPTM->szOriginalRawPath, needleRawOut, CONFIG_READ))
             memcpy(pPTM->szCurrentRawPath, pPTM->szOriginalRawPath, MAX_PATH_BUFFER_SIZE);
@@ -485,6 +564,14 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
             memcpy(pPTM->szCurrentAudPath, pPTM->szOriginalAudPath, MAX_PATH_BUFFER_SIZE);
         if (ProcessQirxXMLFile(pPTM->szOriginalTiiPath, needleTiiLog, CONFIG_READ))
             memcpy(pPTM->szCurrentTiiPath, pPTM->szOriginalTiiPath, MAX_PATH_BUFFER_SIZE);
+
+        if (pPTM->flagIsQ5) { // skip entry if version !5
+            SendMessage(pPTM->hWndCbNodeSel, CB_ADDSTRING, 0, (LPARAM)szEti);
+            if (ProcessQirxXMLFile(pPTM->szOriginalEtiPath, needleEtiOut, CONFIG_READ))
+                memcpy(pPTM->szCurrentEtiPath, pPTM->szOriginalEtiPath, MAX_PATH_BUFFER_SIZE);
+        }
+        
+        SendMessage(pPTM->hWndCbNodeSel, CB_SETCURSEL, 0, 0);
 
         backgroundQirx = CreateSolidBrush(COLREF_QIRXBLUE);
         backgroundHalfRed = CreateSolidBrush(COLREF_HALFRED);
@@ -508,9 +595,23 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
         if (pPTM->flagTiiDriveOnline)
             pPTM->flagTiiDriveOnline =
             SerialCheck(pPTM->mDlgSet.szExtTiiPath, pPTM->mDlgSet.tiiPathDriveSerial);
+        
+        if (pPTM->flagIsQ5) {
+            pPTM->flagEtiDriveOnline = CheckPathExists(pPTM->mDlgSet.szExtEtiPath);
+            if (pPTM->flagEtiDriveOnline)
+                pPTM->flagEtiDriveOnline =
+                SerialCheck(pPTM->mDlgSet.szExtEtiPath, pPTM->mDlgSet.etiPathDriveSerial);
+            
+            if (!pPTM->flagAudDriveOnline || !pPTM->flagRawDriveOnline ||
+                !pPTM->flagTiiDriveOnline || !pPTM->flagEtiDriveOnline)
+                TIMER_ON;
+        }
+        else {
+            if (!pPTM->flagAudDriveOnline || !pPTM->flagRawDriveOnline ||
+                !pPTM->flagTiiDriveOnline)
+                TIMER_ON;
+        }
 
-        if (!pPTM->flagAudDriveOnline || !pPTM->flagRawDriveOnline || !pPTM->flagTiiDriveOnline)
-            TIMER_ON;
 
         // simulating clicks
         if (pPTM->mDlgSet.autoPathSwap)
@@ -533,7 +634,8 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
             MB_ICONQUESTION | MB_YESNO | MB_SETFOREGROUND);
 
         if (IDYES == answer) {
-            if (!pPTM->flagAudDriveOnline || !pPTM->flagRawDriveOnline || !pPTM->flagTiiDriveOnline)
+            if (!pPTM->flagAudDriveOnline || !pPTM->flagRawDriveOnline ||
+                !pPTM->flagTiiDriveOnline || !pPTM->flagEtiDriveOnline)
                 TIMER_OFF;
             // SC_RESTORE to get useful screen coordinates, if the dialog is currently minimized 
             SendMessage(hDlg, WM_SYSCOMMAND, SC_RESTORE, 0);
@@ -557,7 +659,7 @@ INT_PTR CALLBACK MainDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPar
 
 // The message from the system may report not only one volume on 
 // a physical drive, so we have to loop through the unitmask. 
-#include <intrin.h>
+
 int ValidatePath(_DEV_BROADCAST_VOLUME* dbv, int mode,
     char* szStoredExternalPath, int storedSerial) {
     int ret = 0;
@@ -610,6 +712,13 @@ void MakePathCurrent() {
         }
         break;
 
+    case NODE_ETI:
+        if (ProcessQirxXMLFile(pPTM->mDlgSet.szExtEtiPath, needleEtiOut, CONFIG_WRITE)) {
+            memcpy(pPTM->szCurrentEtiPath, pPTM->mDlgSet.szExtEtiPath, MAX_PATH_BUFFER_SIZE);
+            pPTM->flagEtiDriveSet = 1;
+        }
+        break;
+
     default:
         if (ProcessQirxXMLFile(pPTM->mDlgSet.szExtTiiPath, needleTiiLog, CONFIG_WRITE)) {
             memcpy(pPTM->szCurrentTiiPath, pPTM->mDlgSet.szExtTiiPath, MAX_PATH_BUFFER_SIZE);
@@ -631,6 +740,13 @@ void ResetPath() {
         if (ProcessQirxXMLFile(pPTM->szOriginalAudPath, needleAudOut, CONFIG_WRITE)) {
             memcpy(pPTM->szCurrentAudPath, pPTM->szOriginalAudPath, MAX_PATH_BUFFER_SIZE);
             pPTM->flagAudDriveSet = 0;
+        }
+        break;
+
+    case NODE_ETI:
+        if (ProcessQirxXMLFile(pPTM->szOriginalEtiPath, needleEtiOut, CONFIG_WRITE)) {
+            memcpy(pPTM->szCurrentEtiPath, pPTM->szOriginalEtiPath, MAX_PATH_BUFFER_SIZE);
+            pPTM->flagEtiDriveSet = 0;
         }
         break;
     default:
@@ -663,7 +779,7 @@ void EnableAllButtons() {
 }
 
 void UpdateDlgControls() {
-    int fOn, fSet;
+    int fOn=0, fSet=0;
     switch (pPTM->currentNodeSelection) {
     case NODE_RAW:
         CompactPathAndSetLabelText(IDC_LBL_CURRENT_PATH, pPTM->szCurrentRawPath);
@@ -677,6 +793,13 @@ void UpdateDlgControls() {
         CompactPathAndSetLabelText(IDC_LBL_EXTERNAL_PATH, pPTM->mDlgSet.szExtAudPath);
         fOn = pPTM->flagAudDriveOnline;
         fSet = pPTM->flagAudDriveSet;
+        break;
+
+    case NODE_ETI:
+        CompactPathAndSetLabelText(IDC_LBL_CURRENT_PATH, pPTM->szCurrentEtiPath);
+        CompactPathAndSetLabelText(IDC_LBL_EXTERNAL_PATH, pPTM->mDlgSet.szExtEtiPath);
+        fOn = pPTM->flagEtiDriveOnline;
+        fSet = pPTM->flagEtiDriveSet;
         break;
 
     default:
@@ -696,7 +819,7 @@ void UpdateDlgControls() {
         DisableAllButtons();
 }
 
-DWORD  GetVolumeSerial(char* pathOnDrive) {
+DWORD GetVolumeSerial(char* pathOnDrive) {
     char drive[8]{};
     DWORD serial = 0;
     memcpy(drive, pathOnDrive, 3);
@@ -704,12 +827,12 @@ DWORD  GetVolumeSerial(char* pathOnDrive) {
     return serial;
 }
 
-int SerialCheck(char* szStoredExternalPath, int storedSerial) {
+int SerialCheck(char* szStoredExternalPath, DWORD storedSerial) {
     int answer, ret = 0;
     char msg[384];
 
     if (GetVolumeSerial(szStoredExternalPath) == storedSerial)
-        ret++; // all is fine
+        ret++;
     else {
         sprintf(msg, "%s\n\n%s", szStoredExternalPath, szMsgSerialCheck);
         answer = MessageBox(pPTM->hWndDialog, msg,
