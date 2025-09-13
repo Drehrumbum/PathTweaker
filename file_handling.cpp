@@ -20,7 +20,14 @@
 * GNU General Public License (GPL).
 *
 *
-* (c) 2024 Heiko Vogel <hevog@gmx.de>
+* 2025-09-13:
+* Check for QIRX version 5 in GetQirxVersionString() and set "flagIsQ5" if we
+* have found it. This enables "ETI" in the drop-down list and you can select
+* another path for eti-recordings. QIRX reads the current eti-path from the
+* config-file before a new recording starts, so it works without stopping the
+* receiver, too.
+* 
+* (c) 2024-25 Heiko Vogel <hevog@gmx.de>
 *
 */
 
@@ -117,6 +124,7 @@ int CreateSubFolder(char* szInoutPath, const char* szNewFolder) {
     }
     return ret;
 }
+
 // Returns version-string (like "qirx4" ) from qirx.bat inside
 // of the program-folder. Needed to find QIRXs config-file. Works 
 // for Qirx versions 3 and 4. QIRX2 needs a 'faked' qirx.bat inside
@@ -142,6 +150,10 @@ inline int GetQirxVersionString(char* szVersion) {
                 pVersion = strchr(pVersion, 0x20);
                 pVersion++;
                 memcpy(szVersion, pVersion, 5);
+                // check if we have Q5 for additional eti-path stuff
+                if (pVersion[4] == '5')
+                    pPTM->flagIsQ5 = 1;
+
                 ret++;
             }
         }
