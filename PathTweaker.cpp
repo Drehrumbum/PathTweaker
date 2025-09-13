@@ -20,7 +20,7 @@
 * GNU General Public License (GPL).
 *
 *
-* (c) 2024 Heiko Vogel <hevog@gmx.de>
+* (c) 2024-25 Heiko Vogel <hevog@gmx.de>
 *
 */
 
@@ -56,13 +56,13 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
         _strupr_s(pPTM->szQirxVersion, 16);
         sprintf(pPTM->szMyWindowTitle, "%s (%s)", szAppName, pPTM->szQirxVersion);
 
-// More than one instance for QIRX 2, 3 and 4 makes no sense. Quit silently.
+// More than one instance for QIRX 2, 3, 4 makes no sense. Quit silently.
         if (!FindWindow(NULL, pPTM->szMyWindowTitle)) {
 // Make sure the dialog is visible, if config not exists
             pPTM->mDlgSet.transparency = 255; 
             pPTM->mDlgSet.topMost = 1;
             ReadDlgConfigFile();
-
+            // Backup the current config
             CopyFile(pPTM->szQirxFullConfigFileName, pPTM->szQirxFullConfigBackupFileName, 0);
 
 // Event for stopping the disc_space_thread at the top of its loop
@@ -88,13 +88,13 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 err:
             if (pPTM->hDiskSpaceThread) {
                 pPTM->finishThread = 1;
-                WaitForSingleObject(pPTM->hDiskSpaceThread, 1000);
+                WaitForSingleObject(pPTM->hDiskSpaceThread, 2000);
                 CloseHandle(pPTM->hDiskSpaceThread);
             }
 
             CloseHandle(pPTM->hWaitPathSwitch);
 
-// restore the default paths, if ext. paths are set
+// restore the default paths, if other paths are set
             if (pPTM->flagRawDriveSet)
                 ProcessQirxXMLFile(pPTM->szOriginalRawPath, needleRawOut, CONFIG_WRITE);
 
@@ -103,6 +103,9 @@ err:
             
             if (pPTM->flagTiiDriveSet)
                 ProcessQirxXMLFile(pPTM->szOriginalTiiPath, needleTiiLog, CONFIG_WRITE);
+            
+            if (pPTM->flagEtiDriveSet)
+                ProcessQirxXMLFile(pPTM->szOriginalEtiPath, needleEtiOut, CONFIG_WRITE);
 
             WriteDlgConfigFile();
         }
